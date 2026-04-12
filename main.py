@@ -1,67 +1,93 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.action_chains import ActionChains
-from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+import requests
 from bs4 import BeautifulSoup
+import pandas as pd
 import time
-import csv
 
-# NASA Exoplanet URL
-START_URL = "https://exoplanets.nasa.gov/exoplanet-catalog/"
+options = webdriver.ChromeOptions()
+options.add_argument("--headless=new")
+options.add_argument("--disable-gpu")
+options.add_argument("--no-sandbox")
 
-# Webdriver
-browser = webdriver.Chrome()
-browser.get(START_URL)
+driver = webdriver.Chrome(options=options)
+wait = WebDriverWait(driver, 10)
 
-time.sleep(2)
+base_url = "https://science.nasa.gov/exoplanets/exoplanet-catalog/?page={}"
 
-planets_data = []
+all_data = []
 
-def scrape():
+def extract_data_from_html(html):
+    soup = BeautifulSoup(html, "html.parser")
 
-    for i in range(100):
-        print(f'Scrapping page {i+1} ...')
+    try:
+        title = soup.select_one("h1.page-heading-md").get_text(strip=True)
+    except:
+        title = ""
 
-        soup = BeautifulSoup(browser.page_source, "html.parser")
+    try:
+        description = soup.select_one(".custom-fields span").get_text(strip=True)
+    except:
+        description = ""
 
-        names = []
-        info = []
+    data = {}
 
-        for ul_tag in soup.find_all(class_ = "hds-content-item"):
-            infos = []
-            for h in ul_tag.find_all("h3"):
-                for i in h:
-                    names.append(i)
-            
-            for j in ul_tag.find_all("span"):
-                for k in j:
-                    infos.append(k)
+    blocks = soup.select(".smd-acf-grid-col")
 
-            for l in range(1, len(infos), 8):
-                L = [infos[l], infos[l + 2], infos[l + 4], infos[l + 6]]
-                info.append(L)
+    for block in blocks:
+        try:
+            key = block.select_one(".text-bold").get_text(strip=True).replace(":", "")
+            val_tag = block.select_one("span") or block.select_one("li span")
+            value = val_tag.get_text(strip=True)
+            data[key] = value
+        except:
+            continue
 
-        for i in range(len(names)):
-            x = []
-            x.append(names[i])
-            x.extend(info[i])
-            planets_data.append(x)
-        
+    return {
+        "title": title,
+        "description": description,
+        **data
+    }
 
-        button = browser.find_element(By.CLASS_NAME, "page-numbers")
-        browser.implicitly_wait(10)
-        ActionChains(browser).move_to_element(button).click(button).perform()
+for page in range(1, 412):
+    print(f"\n--- Page {page} ---")
 
-    print("Data Scraped Completed!")
+    driver.get(base_url.format(page))
 
-# Calling Method
-scrape()
+    wait.until(EC.presence_of_all_elements_located(
+        (By.CSS_SELECTOR, "a.hds-content-item-thumbnail")
+    ))
 
-# Define Header
-headers = ["name", "light_years_from_earth",
-           "planet_mass", "stellar_magnitude", "discovery_date"]
+    items = driver.find_elements(By.CSS_SELECTOR, "a.hds-content-item-thumbnail")
+    links = [item.get_attribute("href") for item in items]
 
-with open("data.csv", "w+") as f:
-    w = csv.writer(f)
-    w.writerow(headers)
-    w.writerows(planets_data)
+    print(f"Found {len(links)} items")
+
+    for link in links:
+        try:
+            html = requests.get(link, timeout=10).text
+            data = extract_data_from_html(html)
+            all_data.append(data)
+            print("Scraped:", data["title"])
+        except Exception as e:
+            print("Error:", e)
+
+        time.sleep(0.1)
+
+    if page % 20 == 0:
+        pd.DataFrame(all_data).to_csv("exoplanets.csv", index=False, encoding="utf-8")
+        print("Progress saved... restarting browser")
+
+        driver.quit()
+        driver = webdriver.Chrome(options=options)
+        wait = WebDriverWait(driver, 10)
+
+df = pd.DataFrame(all_data)
+df.to_csv("exoplanets.csv", index=False, encoding="utf-8")
+
+driver.quit()
+
+print("Saved to exoplanets.csv")
